@@ -16,53 +16,24 @@
 #import "FBFindElementCommands.h"
 #import "FBSpringboardApplication.h"
 #import "FBLogger.h"
-#import "XCAXClient_iOS.h"
-#import "XCElementSnapshot+Helpers.h"
-#import "XCElementSnapshot-Hitpoint.h"
+#import "FBXCodeCompatibility.h"
+#import "XCElementSnapshot+FBHelpers.h"
 #import "XCElementSnapshot.h"
 #import "XCTestManager_ManagerInterface-Protocol.h"
+#import "XCUIApplication+FBAlert.h"
 #import "XCUICoordinate.h"
 #import "XCUIElement+FBTap.h"
-#import "XCUIElement+Utilities.h"
-#import "XCUIElement+WebDriverAttributes.h"
+#import "XCUIElement+FBTyping.h"
+#import "XCUIElement+FBUtilities.h"
+#import "XCUIElement+FBWebDriverAttributes.h"
 #import "XCUIElement.h"
 #import "XCUIElementQuery.h"
 
 NSString *const FBAlertObstructingElementException = @"FBAlertObstructingElementException";
 
-@interface XCUIApplication (FBAlert)
-
-- (XCUIElement *)fb_alertElement;
-
-@end
-
-@implementation XCUIApplication (FBAlert)
-
-- (XCUIElement *)fb_alertElement
-{
-  XCUIElement *alert = self.alerts.element;
-  if (alert.exists) {
-    return alert;
-  }
-    
-  //Only return sheet if it does not have a dismiss popover region.
-  BOOL isIpad = [UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad;
-  //check for Apple's popover region in a UIPopoverController.
-  NSPredicate *predicateString = [NSPredicate predicateWithFormat:@"identifier == 'PopoverDismissRegion'"];
-  XCUIElementQuery *query = [[self.application descendantsMatchingType:XCUIElementTypeAny] matchingPredicate:predicateString];
-  NSArray *childElements = [query allElementsBoundByIndex];
-    
-  alert = self.sheets.element;
-  if (alert.exists && (childElements.count == 0 || !isIpad)) {
-    return alert;
-  }
-  return nil;
-}
-
-@end
-
 @interface FBAlert ()
 @property (nonatomic, strong) XCUIApplication *application;
+@property (nonatomic, strong, nullable) XCUIElement *element;
 @end
 
 @implementation FBAlert
@@ -79,6 +50,14 @@ NSString *const FBAlertObstructingElementException = @"FBAlertObstructingElement
   return alert;
 }
 
++ (instancetype)alertWithElement:(XCUIElement *)element
+{
+  FBAlert *alert = [FBAlert new];
+  alert.element = element;
+  alert.application = element.application;
+  return alert;
+}
+
 - (BOOL)isPresent
 {
   return self.alertElement.exists;
@@ -90,24 +69,63 @@ NSString *const FBAlertObstructingElementException = @"FBAlertObstructingElement
   if (!alert) {
     return nil;
   }
-  NSArray<XCElementSnapshot *> *staticTextList = [alert.lastSnapshot fb_descendantsMatchingType:XCUIElementTypeStaticText];
-  NSMutableString *mText = [NSMutableString string];
-  for (XCElementSnapshot *staticText in staticTextList) {
-    if (staticText.wdLabel && staticText.isWDVisible) {
-      [mText appendFormat:@"%@\n", staticText.wdLabel];
+  NSArray<XCUIElement *> *staticTextList = [alert descendantsMatchingType:XCUIElementTypeStaticText].allElementsBoundByAccessibilityElement;
+  NSMutableArray<NSString *> *resultText = [NSMutableArray array];
+  for (XCUIElement *staticText in staticTextList) {
+    if (staticText.isWDVisible) {
+      if (staticText.wdLabel) {
+        [resultText addObject:[NSString stringWithFormat:@"%@", staticText.wdLabel]];
+      } else if (staticText.wdValue) {
+        [resultText addObject:[NSString stringWithFormat:@"%@", staticText.wdValue]];
+      }
     }
   }
-  // Removing last '\n'
-  if (mText.length > 0) {
-    [mText replaceCharactersInRange:NSMakeRange(mText.length - @"\n".length, @"\n".length) withString:@""];
+  if (resultText.count) {
+    return [resultText componentsJoinedByString:@"\n"];
   }
-  return mText.length > 0 ? mText.copy : [NSNull null];
+  // return an empty string to reflect the fact there is an alert, but it does not contain any text
+  return @"";
+}
+
+- (BOOL)typeText:(NSString *)text error:(NSError **)error
+{
+  XCUIElement *alert = self.alertElement;
+  NSArray<XCUIElement *> *textFields = alert.textFields.allElementsBoundByAccessibilityElement;
+  NSArray<XCUIElement *> *secureTextFiels = alert.secureTextFields.allElementsBoundByAccessibilityElement;
+  if (textFields.count + secureTextFiels.count > 1) {
+    return [[[FBErrorBuilder builder]
+      withDescriptionFormat:@"The alert contains more than one input field"]
+     buildError:error];
+  }
+  if (0 == textFields.count + secureTextFiels.count) {
+    return [[[FBErrorBuilder builder]
+             withDescriptionFormat:@"The alert contains no input fields"]
+            buildError:error];
+  }
+  if (secureTextFiels.count > 0) {
+    return [secureTextFiels.firstObject fb_typeText:text error:error];
+  }
+  return [textFields.firstObject fb_typeText:text error:error];
+}
+
+- (NSArray *)buttonLabels
+{
+  NSMutableArray *value = [NSMutableArray array];
+  XCUIElement *alertElement = self.alertElement;
+  if (!alertElement) {
+    return nil;
+  }
+  NSArray<XCUIElement *> *buttons = [alertElement descendantsMatchingType:XCUIElementTypeButton].allElementsBoundByAccessibilityElement;
+  for(XCUIElement *button in buttons) {
+    [value addObject:[button wdLabel]];
+  }
+  return value;
 }
 
 - (BOOL)acceptWithError:(NSError **)error
 {
   XCUIElement *alertElement = self.alertElement;
-  NSArray<XCUIElement *> *buttons = [alertElement descendantsMatchingType:XCUIElementTypeButton].allElementsBoundByIndex;
+  NSArray<XCUIElement *> *buttons = [alertElement descendantsMatchingType:XCUIElementTypeButton].allElementsBoundByAccessibilityElement;
 
   XCUIElement *defaultButton;
   if (alertElement.elementType == XCUIElementTypeAlert) {
@@ -128,7 +146,7 @@ NSString *const FBAlertObstructingElementException = @"FBAlertObstructingElement
 {
   XCUIElement *cancelButton;
   XCUIElement *alertElement = self.alertElement;
-  NSArray<XCUIElement *> *buttons = [alertElement descendantsMatchingType:XCUIElementTypeButton].allElementsBoundByIndex;
+  NSArray<XCUIElement *> *buttons = [alertElement descendantsMatchingType:XCUIElementTypeButton].allElementsBoundByAccessibilityElement;
 
   if (alertElement.elementType == XCUIElementTypeAlert) {
     cancelButton = buttons.firstObject;
@@ -145,17 +163,40 @@ NSString *const FBAlertObstructingElementException = @"FBAlertObstructingElement
   return [cancelButton fb_tapWithError:error];
 }
 
+- (BOOL)clickAlertButton:(NSString *)label error:(NSError **)error {
+
+  XCUIElement *alertElement = self.alertElement;
+  NSArray<XCUIElement *> *buttons = [alertElement descendantsMatchingType:XCUIElementTypeButton].allElementsBoundByAccessibilityElement;
+  XCUIElement *requestedButton;
+
+  for(XCUIElement *button in buttons) {
+    if([[button wdLabel] isEqualToString:label]){
+      requestedButton = button;
+      break;
+    }
+  }
+
+  if(!requestedButton) {
+    return
+    [[[FBErrorBuilder builder]
+      withDescriptionFormat:@"Failed to find button with label %@ for alert: %@", label, alertElement]
+     buildError:error];
+  }
+
+  return [requestedButton fb_tapWithError:error];
+}
+
 + (BOOL)isElementObstructedByAlertView:(XCUIElement *)element alert:(XCUIElement *)alert
 {
   if (!alert.exists) {
     return NO;
   }
-  [alert resolve];
-  [element resolve];
-  if ([alert.lastSnapshot _isAncestorOfElement:element.lastSnapshot]) {
+  XCElementSnapshot *alertSnapshot = alert.fb_lastSnapshot;
+  XCElementSnapshot *elementSnapshot = element.fb_lastSnapshot;
+  if ([alertSnapshot _isAncestorOfElement:elementSnapshot]) {
     return NO;
   }
-  if ([alert.lastSnapshot _matchesElement:element.lastSnapshot]) {
+  if ([alertSnapshot _matchesElement:elementSnapshot]) {
     return NO;
   }
   return YES;
@@ -183,7 +224,10 @@ NSString *const FBAlertObstructingElementException = @"FBAlertObstructingElement
 
 - (XCUIElement *)alertElement
 {
-  XCUIElement *alert = self.application.fb_alertElement ?: [FBSpringboardApplication fb_springboard].fb_alertElement;
+  XCUIElement *alert = self.element;
+  if (nil == alert) {
+    alert = self.application.fb_alertElement ?: [FBSpringboardApplication fb_springboard].fb_alertElement;
+  }
   if (!alert.exists) {
     return nil;
   }

@@ -10,42 +10,62 @@
 #import <XCTest/XCTest.h>
 
 #import "FBIntegrationTestCase.h"
+#import "FBTestMacros.h"
 
+#import "FBMacros.h"
 #import "XCUIElement+FBIsVisible.h"
 #import "XCUIElement+FBScrolling.h"
 
+#import "XCUIElement+FBClassChain.h"
+
 #define FBCellElementWithLabel(label) ([self.testedApplication descendantsMatchingType:XCUIElementTypeAny][label])
-#define FBAssertVisibleCell(label) XCTAssertTrue(FBCellElementWithLabel(label).fb_isVisible, @"Cell %@ should be visible", label)
-#define FBAssertInvisibleCell(label) XCTAssertFalse(FBCellElementWithLabel(label).fb_isVisible, @"Cell %@ should be invisible", label)
+#define FBAssertVisibleCell(label) FBAssertWaitTillBecomesTrue(FBCellElementWithLabel(label).fb_isVisible)
+#define FBAssertInvisibleCell(label) FBAssertWaitTillBecomesTrue(!FBCellElementWithLabel(label).fb_isVisible)
 
 @interface FBScrollingTests : FBIntegrationTestCase
-@property (nonatomic, strong) XCUIElement *tableView;
+@property (nonatomic, strong) XCUIElement *scrollView;
 @end
 
 @implementation FBScrollingTests
 
-+ (BOOL)shouldUseStrippedCells
++ (BOOL)shouldShowCells
 {
-  return NO;
+  return YES;
 }
 
 - (void)setUp
 {
   [super setUp];
-  [self gotToScrollsWithAccessibilityStrippedCells:NO];
-  self.tableView = self.testedApplication.tables.element;
-  [self.tableView resolve];
+  [self launchApplication];
+  [self goToScrollPageWithCells:YES];
+  self.scrollView = [[self.testedApplication.query descendantsMatchingType:XCUIElementTypeAny] matchingIdentifier:@"scrollView"].element;
+  [self.scrollView resolve];
+}
+
+- (void)testCellVisibility
+{
+  FBAssertVisibleCell(@"0");
+  FBAssertVisibleCell(@"10");
+  FBAssertInvisibleCell(@"30");
+  FBAssertInvisibleCell(@"50");
 }
 
 - (void)testSimpleScroll
 {
   FBAssertVisibleCell(@"0");
   FBAssertVisibleCell(@"10");
-  [self.tableView fb_scrollDown];
+  [self.scrollView fb_scrollDownByNormalizedDistance:1.0];
   FBAssertInvisibleCell(@"0");
   FBAssertInvisibleCell(@"10");
-  XCTAssertTrue(self.testedApplication.cells.count > 0);
-  [self.tableView fb_scrollUp];
+  XCTAssertTrue(self.testedApplication.staticTexts.count > 0);
+  // Scroll up might sometimes be unstable
+  // (it depends on Simulator window size and the actual machine perfomance)
+  for (int retry = 0; retry < 5; ++retry) {
+    [self.scrollView fb_scrollUpByNormalizedDistance:1.0];
+    if (FBCellElementWithLabel(@"0").fb_isVisible) {
+      break;
+    }
+  }
   FBAssertVisibleCell(@"0");
   FBAssertVisibleCell(@"10");
 }
@@ -70,4 +90,20 @@
   FBAssertVisibleCell(cellName);
 }
 
+- (void)testAttributeWithNullScrollToVisible
+{
+  NSError *error;
+  NSArray<XCUIElement *> *queryMatches = [self.testedApplication fb_descendantsMatchingClassChain:@"**/XCUIElementTypeTable/XCUIElementTypeCell[60]" shouldReturnAfterFirstMatch:NO];
+  XCTAssertEqual(queryMatches.count, 1);
+  XCUIElement *element = queryMatches.firstObject;
+  XCTAssertFalse(element.fb_isVisible);
+  [element fb_scrollToVisibleWithError:&error];
+  XCTAssertNil(error);
+  XCTAssertTrue(element.fb_isVisible);
+  [element tap];
+  [element resolve];
+  XCTAssertTrue(element.lastSnapshot.selected);
+}
+
 @end
+

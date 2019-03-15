@@ -9,19 +9,24 @@
 
 #import <Foundation/Foundation.h>
 
-#import <WebDriverAgentLib/XCDebugLogDelegate-Protocol.h>
+@protocol XCDebugLogDelegate;
 
 /*! Accessibility identifier for is visible attribute */
 extern NSNumber *FB_XCAXAIsVisibleAttribute;
+extern const char* FB_XCAXAIsVisibleAttributeName;
 
 /*! Accessibility identifier for is accessible attribute */
 extern NSNumber *FB_XCAXAIsElementAttribute;
+extern const char* FB_XCAXAIsElementAttributeName;
 
 /*! Getter for  XCTest logger */
-extern id<XCDebugLogDelegate> (*XCDebugLogger)();
+extern id<XCDebugLogDelegate> (*XCDebugLogger)(void);
 
 /*! Setter for  XCTest logger */
 extern void (*XCSetDebugLogger)(id <XCDebugLogDelegate>);
+
+/*! Maps string attributes to AX Accesibility Attributes*/
+extern NSArray<NSNumber *> *(*XCAXAccessibilityAttributesForStringAttributes)(id stringAttributes);
 
 /**
  Method used to retrieve pointer for given symbol 'name' from given 'binary'

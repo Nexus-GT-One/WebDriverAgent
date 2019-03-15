@@ -12,14 +12,42 @@
 #import <arpa/inet.h>
 #import <ifaddrs.h>
 #include <notify.h>
+#import <objc/runtime.h>
 
 #import "FBSpringboardApplication.h"
+#import "FBErrorBuilder.h"
+#import "FBImageUtils.h"
+#import "FBMacros.h"
+#import "FBMathUtils.h"
+#import "FBXCodeCompatibility.h"
 
-#import "XCAXClient_iOS.h"
+#import "XCUIDevice.h"
+#import "XCUIScreen.h"
 
 static const NSTimeInterval FBHomeButtonCoolOffTime = 1.;
+static const NSTimeInterval FBScreenLockTimeout = 5.;
 
 @implementation XCUIDevice (FBHelpers)
+
+static bool fb_isLocked;
+
++ (void)load
+{
+  [self fb_registerAppforDetectLockState];
+}
+
++ (void)fb_registerAppforDetectLockState
+{
+  int notify_token;
+  #pragma clang diagnostic push
+  #pragma clang diagnostic ignored "-Wstrict-prototypes"
+  notify_register_dispatch("com.apple.springboard.lockstate", &notify_token, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^(int token) {
+    uint64_t state = UINT64_MAX;
+    notify_get_state(token, &state);
+    fb_isLocked = state != 0;
+  });
+  #pragma clang diagnostic pop
+}
 
 - (BOOL)fb_goToHomescreenWithError:(NSError **)error
 {
@@ -36,9 +64,58 @@ static const NSTimeInterval FBHomeButtonCoolOffTime = 1.;
   return YES;
 }
 
-- (NSData *)fb_screenshot
+- (BOOL)fb_lockScreen:(NSError **)error
 {
-  return [[XCAXClient_iOS sharedClient] screenshotData];
+  if (fb_isLocked) {
+    return YES;
+  }
+  [self pressLockButton];
+  return [[[[FBRunLoopSpinner new]
+            timeout:FBScreenLockTimeout]
+           timeoutErrorMessage:@"Timed out while waiting until the screen gets locked"]
+          spinUntilTrue:^BOOL{
+            return fb_isLocked;
+          } error:error];
+}
+
+- (BOOL)fb_isScreenLocked
+{
+  return fb_isLocked;
+}
+
+- (BOOL)fb_unlockScreen:(NSError **)error
+{
+  if (!fb_isLocked) {
+    return YES;
+  }
+  [self pressButton:XCUIDeviceButtonHome];
+  [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:FBHomeButtonCoolOffTime]];
+  if (SYSTEM_VERSION_LESS_THAN(@"10.0")) {
+    [[FBApplication fb_activeApplication] swipeRight];
+  } else {
+    [self pressButton:XCUIDeviceButtonHome];
+  }
+  [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:FBHomeButtonCoolOffTime]];
+  return [[[[FBRunLoopSpinner new]
+            timeout:FBScreenLockTimeout]
+           timeoutErrorMessage:@"Timed out while waiting until the screen gets unlocked"]
+          spinUntilTrue:^BOOL{
+            return !fb_isLocked;
+          } error:error];
+}
+
+- (NSData *)fb_screenshotWithError:(NSError*__autoreleasing*)error
+{
+  NSData* screenshotData = [self fb_rawScreenshotWithQuality:FBConfiguration.screenshotQuality rect:CGRectNull error:error];
+  if (nil == screenshotData) {
+    return nil;
+  }
+  return FBAdjustScreenshotOrientationForApplication(screenshotData, FBApplication.fb_activeApplication.interfaceOrientation);
+}
+
+- (NSData *)fb_rawScreenshotWithQuality:(NSUInteger)quality rect:(CGRect)rect error:(NSError*__autoreleasing*)error
+{
+  return [XCUIScreen.mainScreen screenshotDataForQuality:quality rect:rect error:error];
 }
 
 - (BOOL)fb_fingerTouchShouldMatch:(BOOL)shouldMatch
@@ -79,6 +156,80 @@ static const NSTimeInterval FBHomeButtonCoolOffTime = 1.;
   }
   freeifaddrs(interfaces);
   return address;
+}
+
+- (BOOL)fb_openUrl:(NSString *)url error:(NSError **)error
+{
+  NSURL *parsedUrl = [NSURL URLWithString:url];
+  if (nil == parsedUrl) {
+    return [[[FBErrorBuilder builder]
+             withDescriptionFormat:@"'%@' is not a valid URL", url]
+            buildError:error];
+  }
+  
+  id siriService = [self valueForKey:@"siriService"];
+  if (nil != siriService) {
+    return [self fb_activateSiriVoiceRecognitionWithText:[NSString stringWithFormat:@"Open {%@}", url] error:error];
+  }
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+  // The link never gets opened by this method: https://forums.developer.apple.com/thread/25355
+  if (![[UIApplication sharedApplication] openURL:parsedUrl]) {
+#pragma clang diagnostic pop
+    return [[[FBErrorBuilder builder]
+             withDescriptionFormat:@"The URL %@ cannot be opened", url]
+            buildError:error];
+  }
+  return YES;
+}
+
+- (BOOL)fb_activateSiriVoiceRecognitionWithText:(NSString *)text error:(NSError **)error
+{
+  id siriService = [self valueForKey:@"siriService"];
+  if (nil == siriService) {
+    return [[[FBErrorBuilder builder]
+             withDescription:@"Siri service is not available on the device under test"]
+            buildError:error];
+  }
+  @try {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+    [siriService performSelector:NSSelectorFromString(@"activateWithVoiceRecognitionText:")
+                      withObject:text];
+#pragma clang diagnostic pop
+    return YES;
+  } @catch (NSException *e) {
+    return [[[FBErrorBuilder builder]
+             withDescriptionFormat:@"%@", e.reason]
+            buildError:error];
+  }
+}
+
+- (BOOL)fb_pressButton:(NSString *)buttonName error:(NSError **)error
+{
+  NSMutableArray<NSString *> *supportedButtonNames = [NSMutableArray array];
+  XCUIDeviceButton dstButton = 0;
+  if ([buttonName.lowercaseString isEqualToString:@"home"]) {
+    dstButton = XCUIDeviceButtonHome;
+  }
+  [supportedButtonNames addObject:@"home"];
+#if !TARGET_OS_SIMULATOR
+  if ([buttonName.lowercaseString isEqualToString:@"volumeup"]) {
+    dstButton = XCUIDeviceButtonVolumeUp;
+  }
+  if ([buttonName.lowercaseString isEqualToString:@"volumedown"]) {
+    dstButton = XCUIDeviceButtonVolumeDown;
+  }
+  [supportedButtonNames addObject:@"volumeUp"];
+  [supportedButtonNames addObject:@"volumeDown"];
+#endif
+  if (dstButton == 0) {
+    return [[[FBErrorBuilder builder]
+             withDescriptionFormat:@"The button '%@' is unknown. Only the following button names are supported: %@", buttonName, supportedButtonNames]
+            buildError:error];
+  }
+  [self pressButton:dstButton];
+  return YES;
 }
 
 @end

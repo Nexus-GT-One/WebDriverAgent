@@ -25,11 +25,6 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)fb_deactivateWithDuration:(NSTimeInterval)duration error:(NSError **)error;
 
 /**
- Returns snapshot element of main window
- */
-- (nullable XCElementSnapshot *)fb_mainWindowSnapshot;
-
-/**
  Return application elements tree in form of nested dictionaries
  */
 - (NSDictionary *)fb_tree;
@@ -38,6 +33,21 @@ NS_ASSUME_NONNULL_BEGIN
  Return application elements accessibility tree in form of nested dictionaries
  */
 - (NSDictionary *)fb_accessibilityTree;
+
+/**
+ Return application elements tree in form of xml string
+ */
+- (nullable NSString *)fb_xmlRepresentation;
+
+/**
+ Return application elements tree in form of internal XCTest debugDescription string
+ */
+- (NSString *)fb_descriptionRepresentation;
+
+/**
+ Returns the element, which currently holds the keyboard input focus or nil if there are no such elements.
+ */
+- (nullable XCUIElement *)fb_activeElement;
 
 @end
 

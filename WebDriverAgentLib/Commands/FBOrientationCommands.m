@@ -8,7 +8,7 @@
  */
 
 #import "FBOrientationCommands.h"
-
+#import "XCUIDevice+FBRotation.h"
 #import "FBRouteRequest.h"
 #import "FBMacros.h"
 #import "FBSession.h"
@@ -29,8 +29,6 @@ const struct FBWDOrientationValues FBWDOrientationValues = {
   .portraitUpsideDown = @"UIA_DEVICE_ORIENTATION_PORTRAIT_UPSIDEDOWN",
 };
 
-const NSTimeInterval kFBWebDriverOrientationChangeDelay = 5.0;
-
 @implementation FBOrientationCommands
 
 #pragma mark - <FBCommandHandler>
@@ -41,6 +39,8 @@ const NSTimeInterval kFBWebDriverOrientationChangeDelay = 5.0;
   @[
     [[FBRoute GET:@"/orientation"] respondWithTarget:self action:@selector(handleGetOrientation:)],
     [[FBRoute POST:@"/orientation"] respondWithTarget:self action:@selector(handleSetOrientation:)],
+    [[FBRoute GET:@"/rotation"] respondWithTarget:self action:@selector(handleGetRotation:)],
+    [[FBRoute POST:@"/rotation"] respondWithTarget:self action:@selector(handleSetRotation:)],
   ];
 }
 
@@ -50,16 +50,33 @@ const NSTimeInterval kFBWebDriverOrientationChangeDelay = 5.0;
 + (id<FBResponsePayload>)handleGetOrientation:(FBRouteRequest *)request
 {
   FBSession *session = request.session;
-  return FBResponseWithStatus(FBCommandStatusNoError, [self.class interfaceOrientationForApplication:session.application]);
+  NSString *orientation = [self.class interfaceOrientationForApplication:session.activeApplication];
+  return FBResponseWithStatus(FBCommandStatusNoError, [[self _wdOrientationsMapping] objectForKey:orientation]);
 }
 
 + (id<FBResponsePayload>)handleSetOrientation:(FBRouteRequest *)request
 {
   FBSession *session = request.session;
-  if ([self.class setDeviceOrientation:request.arguments[@"orientation"] forApplication:session.application]) {
+  if ([self.class setDeviceOrientation:request.arguments[@"orientation"] forApplication:session.activeApplication]) {
     return FBResponseWithOK();
   }
-  return FBResponseWithStatus(FBCommandStatusRotationNotAllowed, @"The orientation specified is not supported by the application");
+  return FBResponseWithStatus(FBCommandStatusRotationNotAllowed, @"Unable To Rotate Device");
+}
+
++ (id<FBResponsePayload>)handleGetRotation:(FBRouteRequest *)request
+{
+    XCUIDevice *device = [XCUIDevice sharedDevice];
+    UIInterfaceOrientation orientation = request.session.activeApplication.interfaceOrientation;
+    return FBResponseWithStatus(FBCommandStatusNoError, device.fb_rotationMapping[@(orientation)]);
+}
+
++ (id<FBResponsePayload>)handleSetRotation:(FBRouteRequest *)request
+{
+    FBSession *session = request.session;
+    if ([self.class setDeviceRotation:request.arguments forApplication:session.activeApplication]) {
+        return FBResponseWithOK();
+    }
+    return FBResponseWithStatus(FBCommandStatusRotationNotAllowed, [NSString stringWithFormat:@"Rotation not supported: %@", request.arguments[@"rotation"]]);
 }
 
 
@@ -77,23 +94,18 @@ const NSTimeInterval kFBWebDriverOrientationChangeDelay = 5.0;
   return keys.anyObject;
 }
 
++ (BOOL)setDeviceRotation:(NSDictionary *)rotationObj forApplication:(FBApplication *)application
+{
+  return [[XCUIDevice sharedDevice] fb_setDeviceRotation:rotationObj];
+}
+
 + (BOOL)setDeviceOrientation:(NSString *)orientation forApplication:(FBApplication *)application
 {
-  NSNumber *orientationValue = [[self _orientationsMapping] objectForKey:orientation];
+  NSNumber *orientationValue = [[self _orientationsMapping] objectForKey:[orientation uppercaseString]];
   if (orientationValue == nil) {
     return NO;
   }
-  [XCUIDevice sharedDevice].orientation = orientationValue.integerValue;
-
-  // We have a busy loop here while we wait for the orientation to change as we do not have any hooks
-  // into the event being handled.
-  // If we could just hook into the event handler to know when it has been processed..
-  NSDate *startDate = [NSDate date];
-  while (![[self interfaceOrientationForApplication:application] isEqualToString:orientation] && (-1 * [startDate timeIntervalSinceNow]) < kFBWebDriverOrientationChangeDelay) {
-    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.0, YES);
-  }
-
-  return [[self interfaceOrientationForApplication:application] isEqualToString:orientation];
+  return [[XCUIDevice sharedDevice] fb_setDeviceInterfaceOrientation:orientationValue.integerValue];
 }
 
 + (NSDictionary *)_orientationsMapping
@@ -107,7 +119,29 @@ const NSTimeInterval kFBWebDriverOrientationChangeDelay = 5.0;
       FBWDOrientationValues.portraitUpsideDown : @(UIDeviceOrientationPortraitUpsideDown),
       FBWDOrientationValues.landscapeLeft : @(UIDeviceOrientationLandscapeLeft),
       FBWDOrientationValues.landscapeRight : @(UIDeviceOrientationLandscapeRight),
-    };
+      };
+  });
+  return orientationMap;
+}
+
+/*
+ We already have FBWDOrientationValues as orientation descriptions, however the strings are not valid
+ WebDriver responses. WebDriver can only receive 'portrait' or 'landscape'. So we can pass the keys
+ through this additional filter to ensure we get one of those. It's essentially a mapping from
+ FBWDOrientationValues to the valid subset of itself we can return to the client
+ */
++ (NSDictionary *)_wdOrientationsMapping
+{
+  static NSDictionary *orientationMap;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    orientationMap =
+    @{
+      FBWDOrientationValues.portrait : FBWDOrientationValues.portrait,
+      FBWDOrientationValues.portraitUpsideDown : FBWDOrientationValues.portrait,
+      FBWDOrientationValues.landscapeLeft : FBWDOrientationValues.landscapeLeft,
+      FBWDOrientationValues.landscapeRight : FBWDOrientationValues.landscapeLeft,
+      };
   });
   return orientationMap;
 }

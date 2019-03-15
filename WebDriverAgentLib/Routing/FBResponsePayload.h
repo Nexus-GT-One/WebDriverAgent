@@ -31,12 +31,12 @@ id<FBResponsePayload> FBResponseWithObject(id object);
 /**
  Returns 'FBCommandStatusNoError' response payload with given 'element', which will be also cached in 'elementCache'
  */
-id<FBResponsePayload> FBResponseWithCachedElement(XCUIElement *element, FBElementCache *elementCache);
+id<FBResponsePayload> FBResponseWithCachedElement(XCUIElement *element, FBElementCache *elementCache, BOOL compact);
 
 /**
  Returns 'FBCommandStatusNoError' response payload with given array of 'elements', which will be also cached in 'elementCache'
  */
-id<FBResponsePayload> FBResponseWithCachedElements(NSArray<XCUIElement *> *elements, FBElementCache *elementCache);
+id<FBResponsePayload> FBResponseWithCachedElements(NSArray<XCUIElement *> *elements, FBElementCache *elementCache, BOOL compact);
 
 /**
  Returns 'FBCommandStatusNoError' response payload with given elementUUID
@@ -62,6 +62,12 @@ id<FBResponsePayload> FBResponseWithStatus(FBCommandStatus status, __nullable id
  Returns 'FBCommandStatusNoError' response payload with content of a file at given 'path'
  */
 id<FBResponsePayload> FBResponseFileWithPath(NSString *path);
+
+/**
+ Returns a response payload as a NSDictionary for given element and elementUUID.
+ Set compact=NO to include further attributes (defined by FBConfiguration.elementResponseAttributes)
+ */
+NSDictionary *FBDictionaryResponseWithElement(XCUIElement *element, NSString *elementUUID, BOOL compact);
 
 
 /**

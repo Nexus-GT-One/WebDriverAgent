@@ -15,10 +15,11 @@
 #import "FBCommandHandler.h"
 #import "FBErrorBuilder.h"
 #import "FBExceptionHandler.h"
-#import "FBHTTPOverUSBServer.h"
+#import "FBMjpegServer.h"
 #import "FBRouteRequest.h"
 #import "FBRuntimeUtils.h"
 #import "FBSession.h"
+#import "FBTCPSocket.h"
 #import "FBUnknownCommands.h"
 #import "FBConfiguration.h"
 #import "FBLogger.h"
@@ -45,7 +46,8 @@ static NSString *const FBServerURLEndMarker = @"<-ServerURLHere";
 @interface FBWebServer ()
 @property (nonatomic, strong) FBExceptionHandler *exceptionHandler;
 @property (nonatomic, strong) RoutingHTTPServer *server;
-@property (nonatomic, strong) FBHTTPOverUSBServer *USBServer;
+@property (atomic, assign) BOOL keepAlive;
+@property (nonatomic, nullable) FBTCPSocket *screenshotsBroadcaster;
 @end
 
 @implementation FBWebServer
@@ -70,8 +72,12 @@ static NSString *const FBServerURLEndMarker = @"<-ServerURLHere";
   [FBLogger logFmt:@"Built at %s %s", __DATE__, __TIME__];
   self.exceptionHandler = [FBExceptionHandler new];
   [self startHTTPServer];
-  [self startUSBServer];
-  [[NSRunLoop mainRunLoop] run];
+  [self initScreenshotsBroadcaster];
+
+  self.keepAlive = YES;
+  NSRunLoop *runLoop = [NSRunLoop mainRunLoop];
+  while (self.keepAlive &&
+         [runLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate distantFuture]]);
 }
 
 - (void)startHTTPServer
@@ -104,13 +110,52 @@ static NSString *const FBServerURLEndMarker = @"<-ServerURLHere";
     [FBLogger logFmt:@"Last attempt to start web server failed with error %@", [error description]];
     abort();
   }
-  [FBLogger logFmt:@"%@http://%@:%d%@", FBServerURLBeginMarker, [XCUIDevice sharedDevice].fb_wifiIPAddress, [self.server port], FBServerURLEndMarker];
+  [FBLogger logFmt:@"%@http://%@:%d%@", FBServerURLBeginMarker, [XCUIDevice sharedDevice].fb_wifiIPAddress ?: @"localhost", [self.server port], FBServerURLEndMarker];
 }
 
-- (void)startUSBServer
+- (void)initScreenshotsBroadcaster
 {
-  self.USBServer = [[FBHTTPOverUSBServer alloc] initWithRoutingServer:self.server];
-  [self.USBServer startServing];
+  [self readMjpegSettingsFromEnv];
+  self.screenshotsBroadcaster = [[FBTCPSocket alloc]
+                                 initWithPort:(uint16_t)FBConfiguration.mjpegServerPort];
+  self.screenshotsBroadcaster.delegate = [[FBMjpegServer alloc] init];
+  NSError *error;
+  if (![self.screenshotsBroadcaster startWithError:&error]) {
+    [FBLogger logFmt:@"Cannot init screenshots broadcaster service on port %@. Original error: %@", @(FBConfiguration.mjpegServerPort), error.description];
+    self.screenshotsBroadcaster = nil;
+  }
+}
+
+- (void)stopScreenshotsBroadcaster
+{
+  if (nil == self.screenshotsBroadcaster) {
+    return;
+  }
+
+  [self.screenshotsBroadcaster stop];
+}
+
+- (void)readMjpegSettingsFromEnv
+{
+  NSDictionary *env = NSProcessInfo.processInfo.environment;
+  NSString *scalingFactor = [env objectForKey:@"MJPEG_SCALING_FACTOR"];
+  if (scalingFactor != nil && [scalingFactor length] > 0) {
+    [FBConfiguration setMjpegScalingFactor:[scalingFactor integerValue]];
+  }
+  NSString *screenshotQuality = [env objectForKey:@"MJPEG_SERVER_SCREENSHOT_QUALITY"];
+  if (screenshotQuality != nil && [screenshotQuality length] > 0) {
+    [FBConfiguration setMjpegServerScreenshotQuality:[screenshotQuality integerValue]];
+  }
+}
+
+- (void)stopServing
+{
+  [FBSession.activeSession kill];
+  [self stopScreenshotsBroadcaster];
+  if (self.server.isRunning) {
+    [self.server stop:NO];
+  }
+  self.keepAlive = NO;
 }
 
 - (BOOL)attemptToStartServer:(RoutingHTTPServer *)server onPort:(NSInteger)port withError:(NSError **)error
@@ -164,7 +209,7 @@ static NSString *const FBServerURLEndMarker = @"<-ServerURLHere";
 
 - (void)handleException:(NSException *)exception forResponse:(RouteResponse *)response
 {
-  if ([self.exceptionHandler webServer:self handleException:exception forResponse:response]) {
+  if ([self.exceptionHandler handleException:exception forResponse:response]) {
     return;
   }
   id<FBResponsePayload> payload = FBResponseWithErrorFormat(@"%@\n\n%@", exception.description, exception.callStackSymbols);
@@ -176,6 +221,12 @@ static NSString *const FBServerURLEndMarker = @"<-ServerURLHere";
   [self.server get:@"/health" withBlock:^(RouteRequest *request, RouteResponse *response) {
     [response respondWithString:@"I-AM-ALIVE"];
   }];
+
+  [self.server get:@"/wda/shutdown" withBlock:^(RouteRequest *request, RouteResponse *response) {
+    [response respondWithString:@"Shutting down"];
+    [self.delegate webServerDidRequestShutdown:self];
+  }];
+
   [self registerRouteHandlers:@[FBUnknownCommands.class]];
 }
 

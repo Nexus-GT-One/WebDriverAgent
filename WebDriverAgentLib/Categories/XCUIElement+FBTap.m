@@ -9,32 +9,37 @@
 
 #import "XCUIElement+FBTap.h"
 
-#import "FBRunLoopSpinner.h"
-#import "FBLogger.h"
-#import "XCUIElement+Utilities.h"
-#import "XCElementSnapshot-Hitpoint.h"
-#import "XCEventGenerator.h"
-#import "XCSynthesizedEventRecord.h"
+#import "XCUIApplication+FBTouchAction.h"
+#import "XCUIElement+FBUtilities.h"
+
 
 @implementation XCUIElement (FBTap)
 
 - (BOOL)fb_tapWithError:(NSError **)error
 {
+  NSArray<NSDictionary<NSString *, id> *> *tapGesture =
+  @[
+    @{@"action": @"tap",
+      @"options": @{@"element": self}
+      }
+    ];
   [self fb_waitUntilFrameIsStable];
-  __block BOOL didSucceed;
-  [FBRunLoopSpinner spinUntilCompletion:^(void(^completion)()){
-    [[XCEventGenerator sharedGenerator] tapAtPoint:self.lastSnapshot.hitPoint orientation:self.interfaceOrientation handler:^(XCSynthesizedEventRecord *record, NSError *commandError) {
-      if (commandError) {
-        [FBLogger logFmt:@"Failed to perform tap: %@", commandError];
+  return [self.application fb_performAppiumTouchActions:tapGesture elementCache:nil error:error];
+}
+
+- (BOOL)fb_tapCoordinate:(CGPoint)relativeCoordinate error:(NSError **)error
+{
+  NSArray<NSDictionary<NSString *, id> *> *tapGesture =
+  @[
+    @{@"action": @"tap",
+      @"options": @{@"element": self,
+                    @"x": @(relativeCoordinate.x),
+                    @"y": @(relativeCoordinate.y)
+                    }
       }
-      if (error) {
-        *error = commandError;
-      }
-      didSucceed = (commandError == nil);
-      completion();
-    }];
-  }];
-  return didSucceed;
+    ];
+  [self fb_waitUntilFrameIsStable];
+  return [self.application fb_performAppiumTouchActions:tapGesture elementCache:nil error:error];
 }
 
 @end
