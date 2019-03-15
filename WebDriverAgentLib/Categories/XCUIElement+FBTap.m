@@ -38,7 +38,8 @@
                     }
       }
     ];
-  [self fb_waitUntilFrameIsStable];
+  // PATCH(ssx): remote control
+  // [self fb_waitUntilFrameIsStable];
   return [self.application fb_performAppiumTouchActions:tapGesture elementCache:nil error:error];
 }
 
